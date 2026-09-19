@@ -368,7 +368,7 @@ public class RagSqlLoader {
         }
 
         long resolveStart = System.currentTimeMillis();
-        List<DependencyResolver.Dependency> deps = DependencyResolver.resolve(projectDir);
+        List<DependencyResolver.Dependency> deps = DependencyResolver.resolve(projectDir, true);
         LOG.infof("RAG scan: resolved %d dependencies for %s in %d ms", deps.size(), projectDir,
                 System.currentTimeMillis() - resolveStart);
         if (deps.isEmpty()) {
