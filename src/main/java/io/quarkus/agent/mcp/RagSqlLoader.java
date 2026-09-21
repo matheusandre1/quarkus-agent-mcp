@@ -362,13 +362,32 @@ public class RagSqlLoader {
         return fragments;
     }
 
-    private List<RagFragment> scanNonCoreExtensionJars(Path m2Repo, String projectDir, String quarkusVersion) {
+    /**
+     * Resolves the dependencies the non-core scan walks.
+     *
+     * <p>Unlike the skills subsystem, which exposes the same choice as
+     * {@code agent-mcp.skills.include-transitive} and defaults it to {@code false}, doc discovery
+     * always resolves transitively. The two paths have different shapes: {@code quarkus_skills} is
+     * read on every skills call in the agent loop, whereas this scan runs behind a pgvector
+     * container start and a 60s throttle, so the one-off {@code mvn dependency:list} fork is noise
+     * next to work already being done. Making it opt-in would also leave the common case broken,
+     * because an extension family that ships its RAG artifact pointer in a single module is only
+     * ever reachable transitively from an application that declares a sibling module.
+     *
+     * <p>Package-private, and taking the flag explicitly, so a test can drive the scan without
+     * forking Maven and still fail if the call site stops asking for transitive resolution.
+     */
+    List<DependencyResolver.Dependency> resolveDependencies(String projectDir, boolean includeTransitive) {
+        return DependencyResolver.resolve(projectDir, includeTransitive);
+    }
+
+    List<RagFragment> scanNonCoreExtensionJars(Path m2Repo, String projectDir, String quarkusVersion) {
         if (projectDir == null) {
             return List.of();
         }
 
         long resolveStart = System.currentTimeMillis();
-        List<DependencyResolver.Dependency> deps = DependencyResolver.resolve(projectDir, true);
+        List<DependencyResolver.Dependency> deps = resolveDependencies(projectDir, true);
         LOG.infof("RAG scan: resolved %d dependencies for %s in %d ms", deps.size(), projectDir,
                 System.currentTimeMillis() - resolveStart);
         if (deps.isEmpty()) {

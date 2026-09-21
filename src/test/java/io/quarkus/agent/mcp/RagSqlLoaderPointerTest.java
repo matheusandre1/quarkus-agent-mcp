@@ -1,6 +1,6 @@
 package io.quarkus.agent.mcp;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
@@ -47,6 +47,12 @@ class RagSqlLoaderPointerTest {
 
         List<RagSqlLoader.RagFragment> fragments = loader.discoverSqlFragments("999-SNAPSHOT", projectDir.toString());
 
-        assertFalse(fragments.isEmpty(), "RAG fragment should be discovered through a transitive dependency");
+        // Assert on the langchain4j fragment specifically, not on the list being non-empty:
+        // discoverSqlFragments also contributes the core documentation fragment, which on a
+        // machine holding a locally built Quarkus 999-SNAPSHOT would satisfy a non-empty
+        // assertion whether or not the transitive scan works.
+        List<String> sources = fragments.stream().map(RagSqlLoader.RagFragment::source).toList();
+        assertTrue(sources.stream().anyMatch(source -> source.startsWith("quarkus-langchain4j")),
+                "RAG fragment should be discovered through a transitive dependency, found: " + sources);
     }
 }
