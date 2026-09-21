@@ -444,31 +444,34 @@ public class RagSqlLoader {
                 }
                 String pointerKey = pointer.groupId() + ":" + pointer.artifactId();
                 if (!seenPointers.add(pointerKey)) {
+                    // Guard the external lookup only, then fall through: this module may still
+                    // ship RAG SQL of its own, and that is a different corpus to the shared
+                    // artifact an earlier module already brought in.
                     LOG.debugf("RAG scan [%d/%d] %s:%s — RAG artifact %s already resolved via an "
-                            + "earlier dependency, skipping",
+                            + "earlier dependency, not resolving it again",
                             index, deps.size(), dep.groupId(), dep.artifactId(), pointerKey);
-                    continue;
-                }
-                long depStart = System.currentTimeMillis();
-                LOG.infof("RAG scan [%d/%d] %s:%s — resolving external RAG artifact %s:%s:%s...",
-                        index, deps.size(), dep.groupId(), dep.artifactId(),
-                        pointer.groupId(), pointer.artifactId(), dep.version());
-                RagFragment fragment = resolveExternalRagArtifact(
-                        pointer, dep.version(), m2Repo, projectDir);
-                long depElapsed = System.currentTimeMillis() - depStart;
-                if (fragment != null) {
-                    String guideUrl = readGuideUrl(m2Repo, dep);
-                    fragments.add(injectExtensionMetadata(fragment, dep.artifactId(), quarkusVersion, guideUrl));
-                    LOG.infof("RAG scan [%d/%d] %s:%s — found RAG SQL via external artifact %s:%s:%s (%d ms)",
+                } else {
+                    long depStart = System.currentTimeMillis();
+                    LOG.infof("RAG scan [%d/%d] %s:%s — resolving external RAG artifact %s:%s:%s...",
+                            index, deps.size(), dep.groupId(), dep.artifactId(),
+                            pointer.groupId(), pointer.artifactId(), dep.version());
+                    RagFragment fragment = resolveExternalRagArtifact(
+                            pointer, dep.version(), m2Repo, projectDir);
+                    long depElapsed = System.currentTimeMillis() - depStart;
+                    if (fragment != null) {
+                        String guideUrl = readGuideUrl(m2Repo, dep);
+                        fragments.add(injectExtensionMetadata(fragment, dep.artifactId(), quarkusVersion, guideUrl));
+                        LOG.infof("RAG scan [%d/%d] %s:%s — found RAG SQL via external artifact %s:%s:%s (%d ms)",
+                                index, deps.size(), dep.groupId(), dep.artifactId(),
+                                pointer.groupId(), pointer.artifactId(), dep.version(), depElapsed);
+                        continue;
+                    }
+                    LOG.infof(
+                            "RAG scan [%d/%d] %s:%s — external RAG artifact %s:%s:%s unavailable (%d ms), "
+                                    + "falling back to deployment jar contents",
                             index, deps.size(), dep.groupId(), dep.artifactId(),
                             pointer.groupId(), pointer.artifactId(), dep.version(), depElapsed);
-                    continue;
                 }
-                LOG.infof(
-                        "RAG scan [%d/%d] %s:%s — external RAG artifact %s:%s:%s unavailable (%d ms), "
-                                + "falling back to deployment jar contents",
-                        index, deps.size(), dep.groupId(), dep.artifactId(),
-                        pointer.groupId(), pointer.artifactId(), dep.version(), depElapsed);
             }
 
             // Fallback: read RAG SQL directly from the deployment JAR
