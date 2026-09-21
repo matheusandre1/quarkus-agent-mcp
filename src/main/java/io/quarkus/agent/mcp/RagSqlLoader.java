@@ -25,6 +25,7 @@ import java.sql.Statement;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -362,13 +363,32 @@ public class RagSqlLoader {
         return fragments;
     }
 
-    private List<RagFragment> scanNonCoreExtensionJars(Path m2Repo, String projectDir, String quarkusVersion) {
+    /**
+     * Resolves the dependencies the non-core scan walks.
+     *
+     * <p>Unlike the skills subsystem, which exposes the same choice as
+     * {@code agent-mcp.skills.include-transitive} and defaults it to {@code false}, doc discovery
+     * always resolves transitively. The two paths have different shapes: {@code quarkus_skills} is
+     * read on every skills call in the agent loop, whereas this scan runs behind a pgvector
+     * container start and a 60s throttle, so the one-off {@code mvn dependency:list} fork is noise
+     * next to work already being done. Making it opt-in would also leave the common case broken,
+     * because an extension family that ships its RAG artifact pointer in a single module is only
+     * ever reachable transitively from an application that declares a sibling module.
+     *
+     * <p>Package-private, and taking the flag explicitly, so a test can drive the scan without
+     * forking Maven and still fail if the call site stops asking for transitive resolution.
+     */
+    List<DependencyResolver.Dependency> resolveDependencies(String projectDir, boolean includeTransitive) {
+        return DependencyResolver.resolve(projectDir, includeTransitive);
+    }
+
+    List<RagFragment> scanNonCoreExtensionJars(Path m2Repo, String projectDir, String quarkusVersion) {
         if (projectDir == null) {
             return List.of();
         }
 
         long resolveStart = System.currentTimeMillis();
-        List<DependencyResolver.Dependency> deps = DependencyResolver.resolve(projectDir);
+        List<DependencyResolver.Dependency> deps = resolveDependencies(projectDir, true);
         LOG.infof("RAG scan: resolved %d dependencies for %s in %d ms", deps.size(), projectDir,
                 System.currentTimeMillis() - resolveStart);
         if (deps.isEmpty()) {
@@ -383,6 +403,11 @@ public class RagSqlLoader {
         long scanStart = System.currentTimeMillis();
 
         List<RagFragment> fragments = new ArrayList<>();
+        // Several modules of one extension family can carry a pointer to the same RAG artifact.
+        // Resolving it once per pointing module would load the same corpus repeatedly, under a
+        // different extension name each time. Transitive resolution makes that likely enough to
+        // guard against: a family's modules are now all in `deps`, not just the declared one.
+        Set<String> seenPointers = new HashSet<>();
         int index = 0;
         int skippedDueToBudget = 0;
         for (DependencyResolver.Dependency dep : deps) {
@@ -417,26 +442,36 @@ public class RagSqlLoader {
                             pointer.groupId(), pointer.artifactId(), nonCoreScanBudgetMillis, elapsedSoFar);
                     continue;
                 }
-                long depStart = System.currentTimeMillis();
-                LOG.infof("RAG scan [%d/%d] %s:%s — resolving external RAG artifact %s:%s:%s...",
-                        index, deps.size(), dep.groupId(), dep.artifactId(),
-                        pointer.groupId(), pointer.artifactId(), dep.version());
-                RagFragment fragment = resolveExternalRagArtifact(
-                        pointer, dep.version(), m2Repo, projectDir);
-                long depElapsed = System.currentTimeMillis() - depStart;
-                if (fragment != null) {
-                    String guideUrl = readGuideUrl(m2Repo, dep);
-                    fragments.add(injectExtensionMetadata(fragment, dep.artifactId(), quarkusVersion, guideUrl));
-                    LOG.infof("RAG scan [%d/%d] %s:%s — found RAG SQL via external artifact %s:%s:%s (%d ms)",
+                String pointerKey = pointer.groupId() + ":" + pointer.artifactId();
+                if (!seenPointers.add(pointerKey)) {
+                    // Guard the external lookup only, then fall through: this module may still
+                    // ship RAG SQL of its own, and that is a different corpus to the shared
+                    // artifact an earlier module already brought in.
+                    LOG.debugf("RAG scan [%d/%d] %s:%s — RAG artifact %s already resolved via an "
+                            + "earlier dependency, not resolving it again",
+                            index, deps.size(), dep.groupId(), dep.artifactId(), pointerKey);
+                } else {
+                    long depStart = System.currentTimeMillis();
+                    LOG.infof("RAG scan [%d/%d] %s:%s — resolving external RAG artifact %s:%s:%s...",
+                            index, deps.size(), dep.groupId(), dep.artifactId(),
+                            pointer.groupId(), pointer.artifactId(), dep.version());
+                    RagFragment fragment = resolveExternalRagArtifact(
+                            pointer, dep.version(), m2Repo, projectDir);
+                    long depElapsed = System.currentTimeMillis() - depStart;
+                    if (fragment != null) {
+                        String guideUrl = readGuideUrl(m2Repo, dep);
+                        fragments.add(injectExtensionMetadata(fragment, dep.artifactId(), quarkusVersion, guideUrl));
+                        LOG.infof("RAG scan [%d/%d] %s:%s — found RAG SQL via external artifact %s:%s:%s (%d ms)",
+                                index, deps.size(), dep.groupId(), dep.artifactId(),
+                                pointer.groupId(), pointer.artifactId(), dep.version(), depElapsed);
+                        continue;
+                    }
+                    LOG.infof(
+                            "RAG scan [%d/%d] %s:%s — external RAG artifact %s:%s:%s unavailable (%d ms), "
+                                    + "falling back to deployment jar contents",
                             index, deps.size(), dep.groupId(), dep.artifactId(),
                             pointer.groupId(), pointer.artifactId(), dep.version(), depElapsed);
-                    continue;
                 }
-                LOG.infof(
-                        "RAG scan [%d/%d] %s:%s — external RAG artifact %s:%s:%s unavailable (%d ms), "
-                                + "falling back to deployment jar contents",
-                        index, deps.size(), dep.groupId(), dep.artifactId(),
-                        pointer.groupId(), pointer.artifactId(), dep.version(), depElapsed);
             }
 
             // Fallback: read RAG SQL directly from the deployment JAR
