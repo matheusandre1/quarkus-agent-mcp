@@ -135,17 +135,19 @@ public final class DependencyResolver {
         List<Dependency> buildToolDeps = resolveViaMaven(dir);
         if (buildToolDeps == null || buildToolDeps.isEmpty()) {
             // Build tool resolution failed or returned nothing — return only resolved XML deps
+            List<Dependency> declared = xmlDeps.stream().filter(d -> d.version() != null).toList();
             if (includeTransitive) {
                 // The caller asked for the full graph and is getting the declared dependencies
                 // instead. Callers that scan for artifacts reachable only through a transitive
-                // edge (RagSqlLoader) silently find nothing in this case, and the degraded list
-                // is cached, so say so once rather than leaving it to be inferred from the
-                // dependency:list warning above.
-                LOG.warnf("Transitive dependency resolution for %s fell back to the %d declared "
+                // edge (RagSqlLoader) silently find nothing in this case, so say so rather than
+                // leaving it to be inferred from the dependency:list warning above. Report what
+                // is actually returned: a pom that leaves every version to the BOM — the norm for
+                // a Quarkus project — parses to all-null versions and degrades to nothing at all.
+                LOG.warnf("Transitive dependency resolution for %s degraded to %d of %d declared "
                         + "dependencies; artifacts reachable only transitively will not be found",
-                        dir, xmlDeps.size());
+                        dir, declared.size(), xmlDeps.size());
             }
-            return xmlDeps.stream().filter(d -> d.version() != null).toList();
+            return declared;
         }
 
         return mergeMavenResults(xmlDeps, buildToolDeps, includeTransitive);
