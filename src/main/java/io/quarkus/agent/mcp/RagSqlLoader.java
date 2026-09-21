@@ -25,6 +25,7 @@ import java.sql.Statement;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -402,6 +403,11 @@ public class RagSqlLoader {
         long scanStart = System.currentTimeMillis();
 
         List<RagFragment> fragments = new ArrayList<>();
+        // Several modules of one extension family can carry a pointer to the same RAG artifact.
+        // Resolving it once per pointing module would load the same corpus repeatedly, under a
+        // different extension name each time. Transitive resolution makes that likely enough to
+        // guard against: a family's modules are now all in `deps`, not just the declared one.
+        Set<String> seenPointers = new HashSet<>();
         int index = 0;
         int skippedDueToBudget = 0;
         for (DependencyResolver.Dependency dep : deps) {
@@ -434,6 +440,13 @@ public class RagSqlLoader {
                                     + "%d ms scan budget exceeded (elapsed %d ms)",
                             index, deps.size(), dep.groupId(), dep.artifactId(),
                             pointer.groupId(), pointer.artifactId(), nonCoreScanBudgetMillis, elapsedSoFar);
+                    continue;
+                }
+                String pointerKey = pointer.groupId() + ":" + pointer.artifactId();
+                if (!seenPointers.add(pointerKey)) {
+                    LOG.debugf("RAG scan [%d/%d] %s:%s — RAG artifact %s already resolved via an "
+                            + "earlier dependency, skipping",
+                            index, deps.size(), dep.groupId(), dep.artifactId(), pointerKey);
                     continue;
                 }
                 long depStart = System.currentTimeMillis();
